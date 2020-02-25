@@ -45,7 +45,6 @@ import com.m2049r.xmrwallet.model.Wallet;
 import com.m2049r.xmrwallet.model.WalletManager;
 import com.m2049r.xmrwallet.util.FingerprintHelper;
 import com.m2049r.xmrwallet.util.Helper;
-import com.m2049r.xmrwallet.util.KeyStoreHelper;
 import com.m2049r.xmrwallet.util.RestoreHeight;
 import com.m2049r.xmrwallet.util.ledger.Monero;
 import com.m2049r.xmrwallet.widget.Toolbar;
@@ -503,9 +502,6 @@ public class GenerateFragment extends Fragment {
         String password = etWalletPassword.getEditText().getText().toString();
         boolean fingerprintAuthAllowed = ((Switch) llFingerprintAuth.getChildAt(0)).isChecked();
 
-        // create the real wallet password
-        String crazyPass = KeyStoreHelper.getCrazyPass(getActivity(), password);
-
         long height = getHeight();
         if (height < 0) height = 0;
 
@@ -514,7 +510,7 @@ public class GenerateFragment extends Fragment {
             if (fingerprintAuthAllowed) {
                 KeyStoreHelper.saveWalletUserPass(getActivity(), name, password);
             }
-            activityCallback.onGenerate(name, crazyPass);
+            activityCallback.onGenerate(name, password);
         } else if (type.equals(TYPE_SEED)) {
             if (!checkMnemonic()) return;
             String seed = etWalletMnemonic.getEditText().getText().toString();
@@ -522,13 +518,13 @@ public class GenerateFragment extends Fragment {
             if (fingerprintAuthAllowed) {
                 KeyStoreHelper.saveWalletUserPass(getActivity(), name, password);
             }
-            activityCallback.onGenerate(name, crazyPass, seed, height);
+            activityCallback.onGenerate(name, password, seed, height);
         } else if (type.equals(TYPE_LEDGER)) {
             bGenerate.setEnabled(false);
             if (fingerprintAuthAllowed) {
                 KeyStoreHelper.saveWalletUserPass(getActivity(), name, password);
             }
-            activityCallback.onGenerateLedger(name, crazyPass, height);
+            activityCallback.onGenerateLedger(name, password, height);
         } else if (type.equals(TYPE_KEY) || type.equals(TYPE_VIEWONLY)) {
             if (checkAddress() && checkViewKey() && checkSpendKey()) {
                 bGenerate.setEnabled(false);
@@ -541,7 +537,7 @@ public class GenerateFragment extends Fragment {
                 if (fingerprintAuthAllowed) {
                     KeyStoreHelper.saveWalletUserPass(getActivity(), name, password);
                 }
-                activityCallback.onGenerate(name, crazyPass, address, viewKey, spendKey, height);
+                activityCallback.onGenerate(name, password, address, viewKey, spendKey, height);
             }
         }
     }

@@ -448,7 +448,7 @@ public class GenerateFragment extends Fragment {
         } catch (ParseException ex) {
             Timber.d("Failed to parse %s, %s", restoreHeight, ex);
         }
-        if (height <= 0)
+        if ((height <= 0) && (restoreHeight.length() == 8))
             try {
                 // or is it a height?
                 height = Long.parseLong(restoreHeight);

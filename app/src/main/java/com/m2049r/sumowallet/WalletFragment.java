@@ -355,6 +355,15 @@ public class WalletFragment extends Fragment
         if (isVisible()) enableAccountsList(true); //otherwise it is enabled in onResume()
     }
 
+    public void unsync() {
+        if (!activityCallback.isWatchOnly()) {
+            bSend.setVisibility(View.INVISIBLE);
+            bSend.setEnabled(false);
+        }
+        if (isVisible()) enableAccountsList(false); //otherwise it is enabled in onResume()
+        firstBlock = 0;        
+    }
+
     boolean walletLoaded = false;
 
     public void onLoaded() {

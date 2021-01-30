@@ -217,6 +217,20 @@ public class WalletActivity extends BaseActivity implements WalletFragment.Liste
         releaseWakeLock();
     }
 
+    private void onWalletRescan() {
+        try {
+            final WalletFragment walletFragment = (WalletFragment)
+                    getSupportFragmentManager().findFragmentByTag(WalletFragment.class.getName());
+            getWallet().rescanBlockchainAsync();
+            synced = false;
+            walletFragment.unsync();
+            invalidateOptionsMenu();
+        } catch (ClassCastException ex) {
+            Timber.d(ex.getLocalizedMessage());
+            // keep calm and carry on
+        }
+    }
+
     @Override
     protected void onStop() {
         Timber.d("onStop()");
@@ -243,7 +257,7 @@ public class WalletActivity extends BaseActivity implements WalletFragment.Liste
     public boolean onPrepareOptionsMenu(Menu menu) {
         MenuItem renameItem = menu.findItem(R.id.action_rename);
         if (renameItem != null)
-            renameItem.setVisible(hasWallet() && getWallet().isSynchronized());
+            renameItem.setEnabled(hasWallet() && getWallet().isSynchronized());
         MenuItem streetmodeItem = menu.findItem(R.id.action_streetmode);
         if (streetmodeItem != null)
             if (isStreetMode()) {
@@ -251,12 +265,18 @@ public class WalletActivity extends BaseActivity implements WalletFragment.Liste
             } else {
                 streetmodeItem.setIcon(R.drawable.gunther_24dp);
             }
+            final MenuItem rescanItem = menu.findItem(R.id.action_rescan);
+            if (rescanItem != null)
+                rescanItem.setEnabled(isSynced());
         return super.onPrepareOptionsMenu(menu);
     }
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         switch (item.getItemId()) {
+          case R.id.action_rescan:
+              onWalletRescan();
+              return true;          
             case R.id.action_info:
                 onWalletDetails();
                 return true;
@@ -563,11 +583,7 @@ public class WalletActivity extends BaseActivity implements WalletFragment.Liste
         });
         if (numAccounts != wallet.getNumAccounts()) {
             numAccounts = wallet.getNumAccounts();
-            runOnUiThread(new Runnable() {
-                public void run() {
-                    updateAccountsList();
-                }
-            });
+            runOnUiThread(this::updateAccountsList);
         }
         try {
             final WalletFragment walletFragment = (WalletFragment)
@@ -1046,21 +1062,23 @@ public class WalletActivity extends BaseActivity implements WalletFragment.Liste
     }
 
     void updateAccountsList() {
-        final Wallet wallet = getWallet();
         Menu menu = accountsView.getMenu();
         menu.removeGroup(R.id.accounts_list);
-        final int n = wallet.getNumAccounts();
-        final boolean showBalances = (n > 1) && !isStreetMode();
-        for (int i = 0; i < n; i++) {
-            final String label = (showBalances ?
-                    getString(R.string.label_account, wallet.getAccountLabel(i), Helper.getDisplayAmount(wallet.getBalance(i), 2))
-                    : wallet.getAccountLabel(i));
-            final MenuItem item = menu.add(R.id.accounts_list, getAccountId(i), 2 * i, label);
-            item.setIcon(R.drawable.ic_account_balance_wallet_black_24dp);
-            if (i == wallet.getAccountIndex())
-                item.setChecked(true);
+        final Wallet wallet = getWallet();
+        if (wallet != null) {
+            final int n = wallet.getNumAccounts();
+            final boolean showBalances = (n > 1) && !isStreetMode();
+            for (int i = 0; i < n; i++) {
+                final String label = (showBalances ?
+                        getString(R.string.label_account, wallet.getAccountLabel(i), Helper.getDisplayAmount(wallet.getBalance(i), 2))
+                        : wallet.getAccountLabel(i));
+                final MenuItem item = menu.add(R.id.accounts_list, getAccountId(i), 2 * i, label);
+                item.setIcon(R.drawable.ic_account_balance_wallet_black_24dp);
+                if (i == wallet.getAccountIndex())
+                    item.setChecked(true);
+            }
+            menu.setGroupCheckable(R.id.accounts_list, true, true);
         }
-        menu.setGroupCheckable(R.id.accounts_list, true, true);
     }
 
     @Override

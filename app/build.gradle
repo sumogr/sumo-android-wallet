@@ -1,21 +1,26 @@
 apply plugin: 'com.android.application'
 
 android {
-    compileSdkVersion 28
-    buildToolsVersion '28.0.3'
+    compileSdkVersion 29
+    buildToolsVersion '29.0.2'
     defaultConfig {
         applicationId "com.m2049r.sumowallet"
         minSdkVersion 21
-        targetSdkVersion 28
-        versionCode 100052
+        targetSdkVersion 289
+        versionCode 100053
         versionName "Samurai"
 
-        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
-                cppFlags "-std=c++17"
+                cppFlags "-std=c++11"
                 arguments '-DANDROID_STL=c++_shared'
             }
+        }
+    }
+    bundle {
+        language {
+            enableSplit = false
         }
     }
 
@@ -28,6 +33,11 @@ android {
             dimension 'net'
             applicationIdSuffix '.stage'
             versionNameSuffix ' (stage)'
+        }
+        devnet {
+            dimension 'net'
+            applicationIdSuffix '.test'
+            versionNameSuffix ' (test)'
         }
         alpha {
             dimension 'type'
@@ -93,6 +103,11 @@ android {
                 outputFileName = "$rootProject.ext.apkName-" + v + "_" + abiName + ".apk"
         }
     }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
 }
 
 dependencies {
@@ -125,4 +140,6 @@ dependencies {
     testImplementation 'org.json:json:20180813'
     testImplementation 'net.jodah:concurrentunit:0.4.4'
 
+    compileOnly 'org.projectlombok:lombok:1.18.16'
+    annotationProcessor 'org.projectlombok:lombok:1.18.16'    
 }

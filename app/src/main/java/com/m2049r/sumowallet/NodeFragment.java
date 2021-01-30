@@ -26,6 +26,7 @@ import android.support.design.widget.TextInputLayout;
 import android.support.v4.app.Fragment;
 import android.support.v4.widget.SwipeRefreshLayout;
 import android.support.v7.widget.RecyclerView;
+
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -37,14 +38,15 @@ import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
-
 import com.m2049r.levin.scanner.Dispatcher;
+import com.m2049r.sumowallet.data.DefaultNodes;
 import com.m2049r.sumowallet.data.Node;
 import com.m2049r.sumowallet.data.NodeInfo;
 import com.m2049r.sumowallet.layout.NodeInfoAdapter;
 import com.m2049r.sumowallet.model.NetworkType;
 import com.m2049r.sumowallet.model.WalletManager;
 import com.m2049r.sumowallet.util.Helper;
+import com.m2049r.sumowallet.util.NodePinger;
 import com.m2049r.sumowallet.util.Notice;
 import com.m2049r.sumowallet.widget.Toolbar;
 
@@ -52,8 +54,10 @@ import java.io.File;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.text.NumberFormat;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Objects;
 import java.util.Set;
 
 import timber.log.Timber;
@@ -85,7 +89,11 @@ public class NodeFragment extends Fragment
 
         Set<NodeInfo> getFavouriteNodes();
 
-        void setFavouriteNodes(Set<NodeInfo> favouriteNodes);
+        Set<NodeInfo> getOrPopulateFavourites();
+
+        void setFavouriteNodes(Collection<NodeInfo> favouriteNodes);
+
+        void setNode(NodeInfo node);
     }
 
     void filterFavourites() {
@@ -157,16 +165,12 @@ public class NodeFragment extends Fragment
         tvPull = view.findViewById(R.id.tvPull);
 
         pullToRefresh = view.findViewById(R.id.pullToRefresh);
-        pullToRefresh.setOnRefreshListener(new SwipeRefreshLayout.OnRefreshListener() {
-            @Override
-            public void onRefresh() {
-                if (WalletManager.getInstance().getNetworkType() == NetworkType.NetworkType_Mainnet) {
-                    refresh();
-                    Toast.makeText(getActivity(), getString(R.string.node_refresh_wait), Toast.LENGTH_LONG).show();
-                } else {
-                    Toast.makeText(getActivity(), getString(R.string.node_wrong_net), Toast.LENGTH_LONG).show();
-                    pullToRefresh.setRefreshing(false);
-                }
+        pullToRefresh.setOnRefreshListener(() -> {
+            if (WalletManager.getInstance().getNetworkType() == NetworkType.NetworkType_Mainnet) {
+                refresh(AsyncFindNodes.SCAN);
+            } else {
+                Toast.makeText(getActivity(), getString(R.string.node_wrong_net), Toast.LENGTH_LONG).show();
+                pullToRefresh.setRefreshing(false);
             }
         });
 
@@ -178,16 +182,19 @@ public class NodeFragment extends Fragment
         ViewGroup llNotice = view.findViewById(R.id.llNotice);
         Notice.showAll(llNotice, ".*_nodes");
 
+        refresh(AsyncFindNodes.PING); // start connection tests
+
         return view;
     }
 
     private AsyncFindNodes asyncFindNodes = null;
 
-    private void refresh() {
-        if (asyncFindNodes != null) return; // ignore refresh request as one is ongoing
+    private boolean refresh(int type) {
+        if (asyncFindNodes != null) return false; // ignore refresh request as one is ongoing
         asyncFindNodes = new AsyncFindNodes();
         updateRefreshElements();
-        asyncFindNodes.execute();
+        asyncFindNodes.execute(type);
+        return true;
     }
 
     @Override
@@ -206,6 +213,25 @@ public class NodeFragment extends Fragment
     @Override
     public void onInteraction(final View view, final NodeInfo nodeItem) {
         Timber.d("onInteraction");
+        if (!nodeItem.isFavourite()) {
+            nodeItem.setFavourite(true);
+            activityCallback.setFavouriteNodes(nodeList);
+        }
+        AsyncTask.execute(() -> {
+            activityCallback.setNode(nodeItem); // this marks it as selected & saves it as well
+            nodeItem.setSelecting(false);
+            try {
+                Objects.requireNonNull(getActivity()).runOnUiThread(() -> nodesAdapter.allowClick(true));
+            } catch (NullPointerException ex) {
+                // it's ok
+            }
+        });
+    }
+
+    // open up edit dialog
+    @Override
+    public void onLongInteraction(final View view, final NodeInfo nodeItem) {
+        Timber.d("onLongInteraction");
         EditDialog diag = createEditDialog(nodeItem);
         if (diag != null) {
             diag.show();
@@ -222,13 +248,14 @@ public class NodeFragment extends Fragment
                     diag.show();
                 }
                 break;
-            case R.id.fab2:
-                refresh();
-                break;
         }
     }
 
-    private class AsyncFindNodes extends AsyncTask<Void, NodeInfo, Boolean> {
+    private class AsyncFindNodes extends AsyncTask<Integer, NodeInfo, Boolean>
+            implements NodePinger.Listener {
+        final static int SCAN = 0;
+        final static int RESTORE_DEFAULTS = 1;
+        final static int PING = 2;
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
@@ -239,50 +266,59 @@ public class NodeFragment extends Fragment
         }
 
         @Override
-        protected Boolean doInBackground(Void... params) {
-            Timber.d("scanning");
-            Set<NodeInfo> seedList = new HashSet<>();
-            seedList.addAll(nodeList);
-            nodeList.clear();
-            Timber.d("seed %d", seedList.size());
-            Dispatcher d = new Dispatcher(new Dispatcher.Listener() {
-                @Override
-                public void onGet(NodeInfo info) {
-                    publishProgress(info);
-                }
-            });
-            d.seedPeers(seedList);
-            d.awaitTermination(NODES_TO_FIND);
-
-            // we didn't find enough because we didn't ask around enough? ask more!
-            if ((d.getRpcNodes().size() < NODES_TO_FIND) &&
-                    (d.getPeerCount() < NODES_TO_FIND + seedList.size())) {
-                // try again
-                publishProgress((NodeInfo[]) null);
-                d = new Dispatcher(new Dispatcher.Listener() {
-                    @Override
-                    public void onGet(NodeInfo info) {
-                        publishProgress(info);
+        protected Boolean doInBackground(Integer... params) {
+            if (params[0] == RESTORE_DEFAULTS) { // true = restore defaults
+                for (DefaultNodes node : DefaultNodes.values()) {
+                    NodeInfo nodeInfo = NodeInfo.fromString(node.getUri());
+                    if (nodeInfo != null) {
+                        nodeInfo.setFavourite(true);
+                        nodeList.add(nodeInfo);
                     }
-                });
-                // also seed with sumokoin seed nodes (see p2p/net_node.inl:618 in sumokoin src)
-                seedList.add(new NodeInfo(new InetSocketAddress("144.217.164.165", 19733))); //Canada
-                seedList.add(new NodeInfo(new InetSocketAddress("217.182.76.94", 19733))); //Poland
-                seedList.add(new NodeInfo(new InetSocketAddress("46.105.92.108", 19733))); //France
-                seedList.add(new NodeInfo(new InetSocketAddress("139.99.193.21", 19733))); //Sydney
-                seedList.add(new NodeInfo(new InetSocketAddress("139.99.40.69", 19733))); //Singapore
-                seedList.add(new NodeInfo(new InetSocketAddress("133.18.53.223", 19733))); //Japan
-                seedList.add(new NodeInfo(new InetSocketAddress("157.230.187.169", 19733))); //New York 1
-                seedList.add(new NodeInfo(new InetSocketAddress("157.245.14.220", 19733))); //New York 2
-                seedList.add(new NodeInfo(new InetSocketAddress("134.209.109.190", 19733))); //Singapore 2
-                seedList.add(new NodeInfo(new InetSocketAddress("167.172.44.84", 19733))); //Amsterdam
-
+                  }
+                  NodePinger.execute(nodeList, this);
+                  return true;
+              } else if (params[0] == PING) {
+                  NodePinger.execute(nodeList, this);
+                  return true;
+              } else if (params[0] == SCAN) {
+                  // otherwise scan the network
+                  Timber.d("scanning");
+                  Set<NodeInfo> seedList = new HashSet<>();
+                  seedList.addAll(nodeList);
+                  nodeList.clear();
+                  Timber.d("seed %d", seedList.size());
+                  Dispatcher d = new Dispatcher(info -> publishProgress(info));
                 d.seedPeers(seedList);
                 d.awaitTermination(NODES_TO_FIND);
+
+                // we didn't find enough because we didn't ask around enough? ask more!
+                if ((d.getRpcNodes().size() < NODES_TO_FIND) &&
+                        (d.getPeerCount() < NODES_TO_FIND + seedList.size())) {
+                    // try again
+                    publishProgress((NodeInfo[]) null);
+                    d = new Dispatcher(new Dispatcher.Listener() {
+                        @Override
+                        public void onGet(NodeInfo info) {
+                            publishProgress(info);
+                        }
+                    });
+                    // also seed with monero seed nodes (see p2p/net_node.inl:410 in monero src)
+                    seedList.add(new NodeInfo(new InetSocketAddress("144.217.164.165", 19733))); //Canada
+                    seedList.add(new NodeInfo(new InetSocketAddress("217.182.76.94", 19733))); //Poland
+                    seedList.add(new NodeInfo(new InetSocketAddress("46.105.92.108", 19733))); //France
+                    seedList.add(new NodeInfo(new InetSocketAddress("139.99.193.21", 19733))); //Sydney
+                    seedList.add(new NodeInfo(new InetSocketAddress("139.99.40.69", 19733))); //Singapore
+                    seedList.add(new NodeInfo(new InetSocketAddress("133.18.53.223", 19733))); //Japan
+                    seedList.add(new NodeInfo(new InetSocketAddress("168.119.105.217", 19733))); //Germany
+                    seedList.add(new NodeInfo(new InetSocketAddress("135.181.96.238", 19733))); //Finland
+                    d.seedPeers(seedList);
+                    d.awaitTermination(NODES_TO_FIND);
+                }
+                // final (filtered) result
+                nodeList.addAll(d.getRpcNodes());
+                return true;
             }
-            // final (filtered) result
-            nodeList.addAll(d.getRpcNodes());
-            return true;
+            return false;
         }
 
         @Override
@@ -316,6 +352,10 @@ public class NodeFragment extends Fragment
             nodesAdapter.setNodes(nodeList);
             nodesAdapter.allowClick(true);
             updateRefreshElements();
+        }
+
+        public void publish(NodeInfo nodeInfo) {
+            publishProgress(nodeInfo);
         }
     }
 
@@ -417,10 +457,6 @@ public class NodeFragment extends Fragment
             NodeFragment.this.editDialog = null;
         }
 
-        private void undoChanges() {
-            if (nodeBackup != null)
-                nodeInfo.overwriteWith(nodeBackup);
-        }
 
         private void show() {
             editDialog.show();
@@ -487,12 +523,9 @@ public class NodeFragment extends Fragment
                     .setPositiveButton(getString(R.string.label_ok), null)
                     .setNeutralButton(getString(R.string.label_test), null)
                     .setNegativeButton(getString(R.string.label_cancel),
-                            new DialogInterface.OnClickListener() {
-                                public void onClick(DialogInterface dialog, int id) {
-                                    undoChanges();
-                                    closeDialog();
-                                    nodesAdapter.dataSetChanged(); // to refresh test results
-                                }
+                    (dialog, id) -> {
+                        closeDialog();
+                        nodesAdapter.dataSetChanged(); // to refresh test results
                             });
 
             editDialog = alertDialogBuilder.create();
@@ -534,7 +567,6 @@ public class NodeFragment extends Fragment
             @Override
             protected void onPreExecute() {
                 super.onPreExecute();
-                nodeInfo.clear();
                 tvResult.setText(getString(R.string.node_testing, nodeInfo.getHostAddress()));
             }
 
@@ -557,6 +589,16 @@ public class NodeFragment extends Fragment
                     }
                 }
             }
+        }
+    }
+
+    void restoreDefaultNodes() {
+        if (WalletManager.getInstance().getNetworkType() == NetworkType.NetworkType_Mainnet) {
+            if (!refresh(AsyncFindNodes.RESTORE_DEFAULTS)) {
+                Toast.makeText(getActivity(), getString(R.string.toast_default_nodes), Toast.LENGTH_SHORT).show();
+            }
+        } else {
+            Toast.makeText(getActivity(), getString(R.string.node_wrong_net), Toast.LENGTH_LONG).show();
         }
     }
 }

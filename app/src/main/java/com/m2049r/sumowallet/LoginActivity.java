@@ -43,6 +43,7 @@ import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.m2049r.sumowallet.data.DefaultNodes;
 import com.m2049r.sumowallet.data.Node;
 import com.m2049r.sumowallet.data.NodeInfo;
 import com.m2049r.sumowallet.dialog.AboutFragment;
@@ -68,6 +69,7 @@ import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -85,6 +87,7 @@ public class LoginActivity extends BaseActivity
     private static final String GENERATE_STACK = "gen";
 
     private static final String NODES_PREFS_NAME = "nodes";
+    private static final String SELECTED_NODE_PREFS_NAME = "selected_node";
     private static final String PREF_DAEMON_STAGENET = "daemon_stagenet";
     private static final String PREF_DAEMON_MAINNET = "daemon_mainnet";
 
@@ -99,10 +102,21 @@ public class LoginActivity extends BaseActivity
 
     @Override
     public void setNode(NodeInfo node) {
-        if ((node != null) && (node.getNetworkType() != WalletManager.getInstance().getNetworkType()))
-            throw new IllegalArgumentException("network type does not match");
-        this.node = node;
-        WalletManager.getInstance().setDaemon(node);
+      setNode(node, true);
+  }
+
+  private void setNode(NodeInfo node, boolean save) {
+      if (node != this.node) {
+          if ((node != null) && (node.getNetworkType() != WalletManager.getInstance().getNetworkType()))
+              throw new IllegalArgumentException("network type does not match");
+          this.node = node;
+          for (NodeInfo nodeInfo : favouriteNodes) {
+              nodeInfo.setSelected(nodeInfo == node);
+          }
+          WalletManager.getInstance().setDaemon(node);
+          if (save)
+              saveSelectedNode();
+      }
     }
 
     @Override
@@ -111,7 +125,22 @@ public class LoginActivity extends BaseActivity
     }
 
     @Override
-    public void setFavouriteNodes(Set<NodeInfo> nodes) {
+    public Set<NodeInfo> getOrPopulateFavourites() {
+        if (favouriteNodes.isEmpty()) {
+            for (DefaultNodes node : DefaultNodes.values()) {
+                NodeInfo nodeInfo = NodeInfo.fromString(node.getUri());
+                if (nodeInfo != null) {
+                    nodeInfo.setFavourite(true);
+                    favouriteNodes.add(nodeInfo);
+                }
+            }
+            saveFavourites();
+        }
+        return favouriteNodes;
+    }
+
+    @Override
+    public void setFavouriteNodes(Collection<NodeInfo> nodes) {
         Timber.d("adding %d nodes", nodes.size());
         favouriteNodes.clear();
         for (NodeInfo node : nodes) {
@@ -119,38 +148,31 @@ public class LoginActivity extends BaseActivity
             if (node.isFavourite())
                 favouriteNodes.add(node);
         }
-        if (favouriteNodes.isEmpty() && (!nodes.isEmpty())) { // no favourites - pick best ones
-            List<NodeInfo> nodeList = new ArrayList<>(nodes);
-            Collections.sort(nodeList, NodeInfo.BestNodeComparator);
-            int i = 0;
-            for (NodeInfo node : nodeList) {
-                Timber.d("adding %s", node);
-                node.setFavourite(true);
-                favouriteNodes.add(node);
-                if (++i >= 3) break; // add max first 3 nodes
-            }
-            Toast.makeText(this, getString(R.string.node_nobookmark, i), Toast.LENGTH_LONG).show();
-        }
         saveFavourites();
     }
 
     private void loadFavouritesWithNetwork() {
-        Helper.runWithNetwork(new Helper.Action() {
-            @Override
-            public boolean run() {
-                loadFavourites();
-                return true;
-            }
+      Helper.runWithNetwork(() -> {
+          loadFavourites();
+          return true;
         });
     }
 
     private void loadFavourites() {
         Timber.d("loadFavourites");
         favouriteNodes.clear();
+        final String selectedNodeId = getSelectedNodeId();
         Map<String, ?> storedNodes = getSharedPreferences(NODES_PREFS_NAME, Context.MODE_PRIVATE).getAll();
         for (Map.Entry<String, ?> nodeEntry : storedNodes.entrySet()) {
-            if (nodeEntry != null) // just in case, ignore possible future errors
-                addFavourite((String) nodeEntry.getValue());
+          if (nodeEntry != null) { // just in case, ignore possible future errors
+              final String nodeId = (String) nodeEntry.getValue();
+              final NodeInfo addedNode = addFavourite(nodeId);
+              if (addedNode != null) {
+                  if (nodeId.equals(selectedNodeId)) {
+                      addedNode.setSelected(true);
+                  }
+              }
+          }
         }
         if (storedNodes.isEmpty()) { // try to load legacy list & remove it (i.e. migrate the data once)
             SharedPreferences sharedPref = getPreferences(Context.MODE_PRIVATE);
@@ -170,13 +192,12 @@ public class LoginActivity extends BaseActivity
     }
 
     private void saveFavourites() {
-        List<Node> favourites = new ArrayList<>();
         Timber.d("SAVE");
         SharedPreferences.Editor editor = getSharedPreferences(NODES_PREFS_NAME, Context.MODE_PRIVATE).edit();
         editor.clear();
         int i = 1;
         for (Node info : favouriteNodes) {
-            String nodeString = info.toNodeString();
+            final String nodeString = info.toNodeString();
             editor.putString(Integer.toString(i), nodeString);
             Timber.d("saved %d:%s", i, nodeString);
             i++;
@@ -184,13 +205,14 @@ public class LoginActivity extends BaseActivity
         editor.apply();
     }
 
-    private void addFavourite(String nodeString) {
-        NodeInfo nodeInfo = NodeInfo.fromString(nodeString);
+    private NodeInfo addFavourite(String nodeString) {
+        final NodeInfo nodeInfo = NodeInfo.fromString(nodeString);
         if (nodeInfo != null) {
             nodeInfo.setFavourite(true);
             favouriteNodes.add(nodeInfo);
         } else
             Timber.w("nodeString invalid: %s", nodeString);
+        return nodeInfo;
     }
 
     private void loadLegacyList(final String legacyListString) {
@@ -200,6 +222,34 @@ public class LoginActivity extends BaseActivity
             addFavourite(nodeString);
         }
     }
+
+    private void saveSelectedNode() { // save only if changed
+        final NodeInfo nodeInfo = getNode();
+        final String selectedNodeId = getSelectedNodeId();
+        if (nodeInfo != null) {
+            if (!nodeInfo.toNodeString().equals(selectedNodeId))
+                saveSelectedNode(nodeInfo);
+        } else {
+            if (selectedNodeId != null)
+                saveSelectedNode(null);
+        }
+    }
+
+    private void saveSelectedNode(NodeInfo nodeInfo) {
+        SharedPreferences.Editor editor = getSharedPreferences(SELECTED_NODE_PREFS_NAME, Context.MODE_PRIVATE).edit();
+        if (nodeInfo == null) {
+            editor.clear();
+        } else {
+            editor.putString("0", getNode().toNodeString());
+        }
+        editor.apply();
+    }
+
+    private String getSelectedNodeId() {
+        return getSharedPreferences(SELECTED_NODE_PREFS_NAME, Context.MODE_PRIVATE)
+                .getString("0", null);
+    }
+
 
     private Toolbar toolbar;
 
@@ -1213,18 +1263,27 @@ public class LoginActivity extends BaseActivity
             case R.id.action_help_node:
                 HelpFragment.display(getSupportFragmentManager(), R.string.help_node);
                 return true;
+                case R.id.action_default_nodes: {
+                    Fragment f = getSupportFragmentManager().findFragmentById(R.id.fragment_container);
+                    if ((WalletManager.getInstance().getNetworkType() == NetworkType.NetworkType_Mainnet) &&
+                            (f instanceof NodeFragment)) {
+                        ((NodeFragment) f).restoreDefaultNodes();
+                    }
+                    return true;
+                }
             case R.id.action_privacy_policy:
                 PrivacyFragment.display(getSupportFragmentManager());
                 return true;
             case R.id.action_language:
                 onChangeLocale();
                 return true;
-            case R.id.action_ledger_seed:
+            case R.id.action_ledger_seed: {
                 Fragment f = getSupportFragmentManager().findFragmentById(R.id.fragment_container);
                 if (f instanceof GenerateFragment) {
                     ((GenerateFragment) f).convertLedgerSeed();
                 }
                 return true;
+            }
             default:
                 return super.onOptionsItemSelected(item);
         }
@@ -1276,6 +1335,7 @@ public class LoginActivity extends BaseActivity
                 }
             }
         }
+        
     }
 
     boolean checkDevice(String walletName, String password) {
